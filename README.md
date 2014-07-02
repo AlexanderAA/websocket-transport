@@ -5,7 +5,7 @@ Reconnecting websocket transport for Angularjs. Has request queue, survives page
 
 Depends on:
 -----------
- * Reconnecting websocket by Joe Walnes
+ * Reconnecting websocket by Joe Walnes, https://github.com/joewalnes/reconnecting-websocket
  * Built for Angularjs, but can be used with other libraries
 
 Features:
