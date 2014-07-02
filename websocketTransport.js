@@ -1,6 +1,8 @@
-/*
- * 
+/* Copyright Alexander Abushkevich
+ * License: BSD
+ *
  * Websocket transport.
+ * 
  * Features:
  *  * Knows error descriptions
  *  * Handles errors and disconnects
