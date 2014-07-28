@@ -1,6 +1,8 @@
-/* Copyright Alexander Abushkevich
+/*
+ * Alexander Abushkevich (c) 2014
+ * 
  * License: BSD
- *
+ * 
  * Websocket transport.
  * 
  * Features:
@@ -8,7 +10,8 @@
  *  * Handles errors and disconnects
  *  * Maintains request queue and pushes requests on reconnect
  *  * Request queue survives page reloads
- *  * Deferreds do NOT survive page reloads
+ *  * Deferreds do NOT survive page reloads 
+ *    (it is likely, that nobody needs them after page reload)
  *  * Generates and tracks unique request and response identifiers
  * 
  * Usage and Limitations:
@@ -22,7 +25,6 @@
  *  The request will be sent immediately or as soon as websocket is open.
  * 
  * */
-
 
 angular.module('kanbanapp').service('websocketTransport', ['$q', '$rootScope', function($q, $rootScope) {
     
@@ -48,94 +50,110 @@ angular.module('kanbanapp').service('websocketTransport', ['$q', '$rootScope', f
         if ((code >= 4000) && (code <= 4999)) { return {name: undefined, message: "Available for use by applications." }; };
     };
     
-    // -------------------------------------------------------------------------
-    // We return this object to anything injecting our service
-    var Service = {};
+    // -----------------------------------------------------------------------
     // Keep all pending requests in local storage until they get responses
     var localStorageKey = 'requestQueue';
     if (!('requestQueue' in localStorage)) {
-        localStorage.setItem(localStorageKey, angular.toJson({}));
+        localStorage.setItem(localStorageKey, JSON.stringify({}));
     };
     // Separate queue for deferreds
     var deferredQueue = {};
+    // Performance stats
+    var stats = {};
     // Create a unique callback ID to map requests to responses
     var currentCallbackId = 0;
+    // When to delete sent entries, which were not answered, from queues
+    var cleanupDelay = 1000*10; // In milliseconds.
+    // -----------------------------------------------------------------------
     
-    // -------------------------------------------------------------------------
     
-    
-    // -------------------------------------------------------------------------
+    // -----------------------------------------------------------------------
     // Request queue
     var getQueue = function(){
         return JSON.parse(localStorage.getItem(localStorageKey));
     };
     var saveQueue = function(q){
-        return localStorage.setItem(localStorageKey, angular.toJson(q));
+        return localStorage.setItem(localStorageKey, JSON.stringify(q));
+    };
+    var getMessageTimestamp = function(messageid) {
+        var timestampStr = messageid.split("|")[1];
+        return parseInt(timestampStr);
+    };
+    var cleanupQueues = function () {
+        var q = getQueue();
+        var ct = new Date().getTime()
+        
+        for (messageid in q) {
+            if (q[messageid].sent) {
+                if ((getMessageTimestamp(messageid) + cleanupDelay) < ct) {
+                    console.log('Removing outdated request and deferred', messageid, q[messageid])
+                    delete q[messageid];
+                    saveQueue(q);
+                    delete deferredQueue[messageid];
+                };
+            };
+        };
+    };
+    var cleanupStats = function () {
+        var ct = new Date().getTime()
+        for (key in stats) {
+            if ((stats[key].time + cleanupDelay) < ct) {
+                console.log('Removing outdated request and deferred', key, q[key])
+                delete stats[key];
+            };
+        };
+        localStorage['stats'] = JSON.stringify(stats);
     };
     var listener = function (data) {
         var q = getQueue();
-        var responseid = data.responseid;
+        var messageid = data.messageid;
         // If an object with responseid exists in our callbacks object, resolve it
-        if(q.hasOwnProperty(responseid)) {
-            console.log('Received response for', responseid);
+        if(q.hasOwnProperty(messageid)) {
+            //console.log('Received response for', messageid);
             //if (!callbacks[responseid].sent) {console.log('We did not send that request!')};
-            delete q[responseid];
+            delete q[messageid];
             saveQueue(q);
-            if (deferredQueue.hasOwnProperty(responseid)) {
-                $rootScope.$apply(deferredQueue[responseid].cb.resolve(data));
-                delete deferredQueue[responseid];
+            if (deferredQueue.hasOwnProperty(messageid)) {
+                $rootScope.$apply(deferredQueue[messageid].cb.resolve(data));
+                // For stats
+                var ct = new Date().getTime();
+                var cts = Math.round(ct/1000);
+                var responseTime = ct - getMessageTimestamp(messageid);
+                if (stats.hasOwnProperty(cts)) {
+                    var count = stats[cts]['count'];
+                    var avgResponseTime = stats[cts]['avgResponseTime'];
+                    avgResponseTime = (avgResponseTime*count + responseTime)/(count+1);
+                    stats[cts] = {count:(count+1), avgResponseTime:avgResponseTime};
+                    console.log('Stats', cts, count, 'resp/s,', Math.round(avgResponseTime), 'ms avg,', Math.round(responseTime), 'ms current.');
+                } else {
+                    stats[cts] = {count:1, avgResponseTime:responseTime};
+                    console.log('Stats', cts, Math.round(responseTime), 'ms current');
+                };
+                // End for stats
+                delete deferredQueue[messageid];
             };
         } else {
-            console.log('No response id');
+            console.log('No message id');
         };
         console.log('Queue length', Object.keys(q).length);
+        setTimeout(cleanupQueues, cleanupDelay);
+        setTimeout(cleanupStats, cleanupDelay);
     };
     // This creates a new callback ID for a request
     var getCallbackId = function () {
-        return Math.random().toString(36).substr(3,18) + + new Date
+        var ct = new Date().getTime();
+        var rnd = Math.round(Math.random()*1e16)
+        return rnd.toString(36) + '|' + ct.toString(10)
     };
-    // Use this method to send requests
-    Service.send = function(request) {
-        var defer = $q.defer();
-        var q = getQueue();
-        var callbackId = getCallbackId();
-        request.requestid = callbackId;
-        q[callbackId] = { time: new Date(), sent:false, request:request };
-        saveQueue(q);
-        deferredQueue[callbackId] = { time: new Date(), cb:defer };
-        console.log('Queuing request', request, 'Queue length', Object.keys(q).length);
-        //Service.ws.send(JSON.stringify(request));
-        setTimeout(function () {processQueue(Service.ws)}, 1);
-        return defer.promise;
-    };
-    // -------------------------------------------------------------------------
+    // -----------------------------------------------------------------------
     
     
-    // -------------------------------------------------------------------------
-    // Websocket is being initialized here
+    // -----------------------------------------------------------------------
     var getWsUrl = function (path) {
         var protocol = (window.location.protocol === "https:") ? 'wss:' : 'ws:';
-        var host     = (window.location.hostname==='')? 'localhost': window.location.hostname;
+        var host     = (window.location.hostname==='')?'localhost':window.location.hostname;
         var port     = (window.location.port==='') ? '':(':'+window.location.port);
         return (protocol + '//' + host + port + path);
-    };
-    var createWebsocket = function (url, ws_onmessage) {
-        socket = new ReconnectingWebSocket(url);
-        socket.debugAll  =  true;
-        socket.onopen    = function (event) { processQueue(socket); };
-        socket.onmessage = ws_onmessage;
-        socket.onclose   =  function(event) {
-                                console.log('Websocket closed', 
-                                            event.code, 
-                                            errcode2msg(event.code)); 
-                                socket.onclose; 
-                            };
-        window.addEventListener('beforeunload',function(event){socket.close()});
-        return socket;
-    };
-    var ws_onmessage = function (event) {
-        console.log("Received message from websocket", event);
-        listener(angular.fromJson(event.data));
     };
     var processQueue = function (socket) {
         var q = getQueue();
@@ -155,12 +173,50 @@ angular.module('kanbanapp').service('websocketTransport', ['$q', '$rootScope', f
             };
         };
     };
-    // -------------------------------------------------------------------------
-    
-    // -------------------------------------------------------------------------
-
-    // -------------------------------------------------------------------------
-    Service.ws = createWebsocket(getWsUrl('/ws/'), ws_onmessage);
+    // -----------------------------------------------------------------------
+    // We return this object to anything injecting our service
+    var Service = {};
+    // Websocket is being initialized here
+    var createWebsocket = function () {
+        var url = getWsUrl('/ws/');
+        socket = new ReconnectingWebSocket(url);
+        socket.debugAll  =  true;
+        socket.onopen    =  function (event) { 
+                                console.log('Websocket open');
+                                processQueue(socket); 
+                                Service.onopen(event); 
+                            };
+        socket.onmessage =  function (event) {
+                                console.log("Received message from websocket", event);
+                                listener(JSON.parse(event.data));
+                            };
+        socket.onclose   =  function(event) {
+                                console.log('Websocket closed', 
+                                            event.code, 
+                                            errcode2msg(event.code)); 
+                                Service.onclose(event);
+                            };
+        window.addEventListener('beforeunload',function(event){socket.close()});
+        return socket;
+    };
+    // Use this method to send requests
+    Service.send = function(request) {
+        var defer = $q.defer();
+        var q = getQueue();
+        var callbackId = getCallbackId();
+        request.messageid = callbackId;
+        q[callbackId] = { sent:false, request:request };
+        saveQueue(q);
+        deferredQueue[callbackId] = { cb:defer };
+        //console.log('Queuing request', request, 'Queue length', Object.keys(q).length);
+        setTimeout(function () {processQueue(Service.ws)}, 1);
+        return defer.promise;
+    };
+    // -----------------------------------------------------------------------
+    Service.onclose = function () {};
+    Service.onopen = function () {};
+    // -----------------------------------------------------------------------
+    Service.ws = createWebsocket();
     return Service;
-    // -------------------------------------------------------------------------
+    // -----------------------------------------------------------------------
 }]);
